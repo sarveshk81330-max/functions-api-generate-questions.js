@@ -1,0 +1,137 @@
+
+export async function onRequestPost({ request, env }) {
+  const headers = {
+    "Content-Type": "application/json",
+    "Cache-Control": "no-store"
+  };
+
+  try {
+    if (!env.GEMINI_API_KEY) {
+      return new Response(JSON.stringify({
+        error: "AI configuration is missing."
+      }), { status: 500, headers });
+    }
+
+    const body = await request.json();
+    const allowedCounts = [10, 25, 50, 100];
+
+    const examType = String(body.examType || "").slice(0, 100);
+    const subject = String(body.subject || "").slice(0, 100);
+    const language = body.language === "English" ? "English" : "Hindi";
+    const count = Number(body.count);
+
+    if (!examType || !subject || !allowedCounts.includes(count)) {
+      return new Response(JSON.stringify({
+        error: "Please provide valid test details."
+      }), { status: 400, headers });
+    }
+
+    const prompt = `
+You are the question generator for CAREER BIHAR.
+
+Create exactly ${count} educational multiple-choice questions.
+
+Exam type: ${examType}
+Subject: ${subject}
+Language: ${language}
+
+Rules:
+- Each question must have exactly four options: A, B, C, D.
+- Exactly one option must be correct.
+- Include a short explanation.
+- Keep questions educational, clear and age-appropriate.
+- Avoid duplicate questions.
+- Do not invent facts. If uncertain, choose a different question.
+- Return only valid JSON matching the requested schema.
+`;
+
+    const schema = {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: {
+          question: { type: "STRING" },
+          options: {
+            type: "OBJECT",
+            properties: {
+              A: { type: "STRING" },
+              B: { type: "STRING" },
+              C: { type: "STRING" },
+              D: { type: "STRING" }
+            },
+            required: ["A", "B", "C", "D"]
+          },
+          correctAnswer: {
+            type: "STRING",
+            enum: ["A", "B", "C", "D"]
+          },
+          explanation: { type: "STRING" }
+        },
+        required: [
+          "question",
+          "options",
+          "correctAnswer",
+          "explanation"
+        ]
+      }
+    };
+
+    const response = await fetch(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": env.GEMINI_API_KEY
+        },
+        body: JSON.stringify({
+          contents: [{
+            parts: [{ text: prompt }]
+          }],
+          generationConfig: {
+            responseMimeType: "application/json",
+            responseSchema: schema,
+            temperature: 0.3,
+            maxOutputTokens: 12000
+          }
+        })
+      }
+    );
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      return new Response(JSON.stringify({
+        error: "AI service could not generate questions. Please try again later."
+      }), { status: 502, headers });
+    }
+
+    const text = result.candidates?.[0]?.content?.parts
+      ?.map(part => part.text || "")
+      .join("");
+
+    if (!text) {
+      return new Response(JSON.stringify({
+        error: "AI returned no questions. Please try again."
+      }), { status: 502, headers });
+    }
+
+    const questions = JSON.parse(text);
+
+    if (!Array.isArray(questions) || questions.length !== count) {
+      return new Response(JSON.stringify({
+        error: "AI returned an incomplete test. Please try again."
+      }), { status: 502, headers });
+    }
+
+    return new Response(JSON.stringify({
+      success: true,
+      questions
+    }), { status: 200, headers });
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      error: "Something went wrong. Please try again."
+    }), { status: 500, headers });
+  }
+}
